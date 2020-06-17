@@ -5,6 +5,9 @@
 
 char *ip = DEFAULT_SERVER;
 int port = DEFAULT_PORT;
+unsigned long max_mempool_size = MAX_MEMPOOL_SIZE;
+unsigned long each_chunk_size = EACH_CHUNK_SIZE;
+int num_data = 100;
 
 void usage(char *program);
 void parse_args(int argc, char *argv[]);
@@ -16,8 +19,9 @@ void test_func2(int sockfd);
 
 int main(int argc, char *argv[]){
     parse_args(argc, argv);
+    INFO("each chunk size=%lu, max mempool size=%lu, number of put data=%d", each_chunk_size, max_mempool_size, num_data);
     int sockfd = connect_setup();
-    mp = mempool_init(EACH_CHUNK_SIZE, MAX_MEMPOOL_SIZE);
+    mp = mempool_init(each_chunk_size, max_mempool_size);
     handle_connection((void*)&sockfd);
     mempool_clear(mp);
     mempool_destroy(mp);
@@ -55,7 +59,7 @@ void test_func2(int sockfd){
     mempool_free(mp, v);
     mempool_free(mp, key);
 
-    int num_data = 10000, i;
+    int i;
     char *key_prefix = "my-key", *value_prefix = "my-value", data1[1024], data2[1024];
     for (i = 0; i < num_data; ++i){
         key = (item_t*)mempool_alloc(mp, sizeof(item_t));
@@ -199,9 +203,12 @@ void usage(char *program){
     printf("Usage: \n");
     printf("%s\tconnect to %s:%d\n", program, ip, port);
     printf("Options:\n");
-    printf(" -s <server>    connect to server address(default %s)\n", DEFAULT_SERVER);
-    printf(" -p <port>      connect to server port(default %d)\n", DEFAULT_PORT);
-    printf(" -h             display the help information\n");
+    printf(" -s <server>                        connect to server address(default %s)\n", DEFAULT_SERVER);
+    printf(" -p <port>                          connect to server port(default %d)\n", DEFAULT_PORT);
+    printf(" -m <max-mempool-size(GB/MB/KB)>    maximum memory pool size(default %d)\n", MAX_MEMPOOL_SIZE);
+    printf(" -e <each-chunk-size(GB/MB/KB)>     each chunk size(default %d)\n", EACH_CHUNK_SIZE);
+    printf(" -n <num-data>                      the number of put data\n");
+    printf(" -h                                 display the help information\n");
 }
 
 void parse_args(int argc, char *argv[]){
@@ -226,6 +233,67 @@ void parse_args(int argc, char *argv[]){
                 i++;
             }else {
                 printf("cannot read ip address\n");
+                usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+        }else if (strlen(argv[i]) == 2 && strcmp(argv[i], "-m") == 0){
+            if (i+1 < argc){
+                char str[128], *p;
+                max_mempool_size = strtoul(argv[i+1], &p, 10);
+                memcpy(str, p, strlen(p) + 1);
+                trim(str);
+                strupr(str);
+                if (strcmp(str, "GB") == 0){
+                    max_mempool_size *= GB;
+                }else if (strcmp(str, "MB") == 0){
+                    max_mempool_size *= MB;
+                }else if (strcmp(str, "KB") == 0){
+                    max_mempool_size *= KB;
+                }
+                if (max_mempool_size <=0 || max_mempool_size > 64 * GB){
+                    printf("invalid max mempool size\n");
+                    exit(EXIT_FAILURE);
+                }
+                i++;
+            }else {
+                printf("cannot read max mempool size\n");
+                usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+        }else if (strlen(argv[i]) == 2 && strcmp(argv[i], "-e") == 0){
+            if (i+1 < argc){
+                char str[128], *p;
+                each_chunk_size = strtoul(argv[i+1], &p, 10);
+                memcpy(str, p, strlen(p) + 1);
+                trim(str);
+                strupr(str);
+                if (strcmp(str, "GB") == 0){
+                    each_chunk_size *= GB;
+                }else if (strcmp(str, "MB") == 0){
+                    each_chunk_size *= MB;
+                }else if (strcmp(str, "KB") == 0){
+                    each_chunk_size *= KB;
+                }
+                if (each_chunk_size <=0 || each_chunk_size > 64 * GB){
+                    printf("invalid each chunk size\n");
+                    exit(EXIT_FAILURE);
+                }
+                i++;
+            }else {
+                printf("cannot read each chunk size\n");
+                usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+        }else if (strlen(argv[i]) == 2 && strcmp(argv[i], "-n") == 0){
+            if (i+1 < argc){
+                num_data = atoi(argv[i+1]);
+                if (num_data <= 0 || num_data > INT32_MAX){
+                    printf("invalid number of data\n");
+                    exit(EXIT_FAILURE);
+                }
+                i++;
+            }else {
+                printf("cannot read number of data\n");
                 usage(argv[0]);
                 exit(EXIT_FAILURE);
             }

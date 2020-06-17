@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <string.h>
 #include <assert.h>
+#include "ctype.h"
 #include "kv_errno.h"
 #include "kv_log.h"
 #include "mempool.h"
@@ -54,5 +55,21 @@ struct reply{
     uint8_t data[0];
 }__attribute__ ((packed));
 typedef struct reply reply_t;
+
+void trim(char *s)
+{
+    int right = strlen(s) - 1, left = 0, idx = 0;
+    while (right >=0 && s[right] == ' ') right--;
+    while (left < strlen(s) && s[left] == ' ') left++;
+    s[right+1] = '\0';
+    while (left <= right + 1){
+        s[idx++] = s[left++];
+    }
+}
+
+void strupr(char *str){
+    for (; *str!='\0'; str++)
+        *str = toupper(*str);
+}
 
 #endif
