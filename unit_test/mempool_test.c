@@ -25,7 +25,7 @@ int main(int argc, char* argv[]){
     double total_time;
     start = clock();
     DEBUG("INIT MEMPOOL");
-    mempool_t *mempool = mempool_init(EACH_CHUNK_SIZE, MAX_POOL_SIZE);
+    mempool_t *mempool = mempool_init(EACH_CHUNK_SIZE, MAX_POOL_SIZE, 0);
 
     test_fun(mempool);
     mempool_clear(mempool);

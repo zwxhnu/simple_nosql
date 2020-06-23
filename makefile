@@ -1,5 +1,7 @@
 CC = gcc
 CPP = g++
+CFLAGS = -c -g -lpthread
+LDFLAGS = -lpthread
 SERVER_OBJS = 	server.o\
 				linked_hashmap.o\
 				mempool.o
@@ -26,22 +28,22 @@ move:
 	mv *.o $(SERVER_OUT) $(CLIENT_OUT) $(LINKED_HASHMAP_OUT) $(MEMPOOL_OUT) bin/
 
 SERVER_OUT : $(SERVER_OBJS)
-	$(CC) $(SERVER_OBJS) -o $(SERVER_OUT)
+	$(CC) $(SERVER_OBJS) -o $(SERVER_OUT) $(LDFLAGS)
 
 CLIENT_OUT : $(CLIENT_OBJS)
-	$(CC) $(CLIENT_OBJS) -o $(CLIENT_OUT)
+	$(CC) $(CLIENT_OBJS) -o $(CLIENT_OUT) $(LDFLAGS)
 
 LINKED_HASHMAP_OUT : $(LINKED_HASHMAP_OBJS)
-	$(CC) $(LINKED_HASHMAP_OBJS) -o $(LINKED_HASHMAP_OUT)
+	$(CC) $(LINKED_HASHMAP_OBJS) -o $(LINKED_HASHMAP_OUT) $(LDFLAGS)
 
 MEMPOOL_OUT : $(MEMPOOL_OBJS)
-	$(CC) $(MEMPOOL_OBJS) -o $(MEMPOOL_OUT)
+	$(CC) $(MEMPOOL_OBJS) -o $(MEMPOOL_OUT) $(LDFLAGS)
 
 %.o : %.c
-	$(CC) -c $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 %.o : $(UNIT_TEST_DIR)/%.c
-	$(CC) -c $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 clean: 
 	rm *.o bin/*

@@ -2,13 +2,30 @@
 
 #define ALIGN_SIZE(n) (n + sizeof(long) - ((sizeof(long) - 1) & n))
 
+#define node_delete(head, x)                      \
+    do {                                          \
+        if (!x->pre) {                           \
+            head = x->next;                       \
+            if (x->next) x->next->pre = NULL;    \
+        } else {                                  \
+            x->pre->next = x->next;              \
+            if (x->next) x->next->pre = x->pre; \
+        }                                         \
+    } while (0)
+
+#define node_insert(head, x)          \
+    do {                              \
+        x->pre = NULL;               \
+        x->next = head;               \
+        if (head) head->pre = x;     \
+        head = x;                     \
+    } while (0)
+
 static void init_chunk(void *chunk_head, mem_size chunk_size);
-static node_t* node_delete(node_t *head, node_t *node);
-static node_t* node_insert(node_t *head, node_t *node);
 static void merge_free_node(mempool_t *mempool, chunk_t *chunk, node_t *node);
 static chunk_t* extend_chunk_list(mempool_t *mempool, mem_size chunk_size);
 
-mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size){
+mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size, uint8_t need_lock){
     if (each_chunk_size > max_pool_size){
         fprintf(stderr, "Init mempool failed. each chunk size cannot be larger than max pool size\n");
         return NULL;
@@ -20,6 +37,8 @@ mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size){
     }
     DEBUG("NODE HEADER SIZE is %llu, NODE TAILER SIZE is %llu", NODE_HEADER_SIZE, NODE_TAILER_SIZE);
     mempool->auto_extend = each_chunk_size < max_pool_size ? 1 : 0;
+    mempool->need_lock = need_lock;
+    if (need_lock) pthread_mutex_init(&mempool->lock, NULL);
     mempool->last_id = 0;
     mempool->each_chunk_size = each_chunk_size;
     mempool->total_chunk_size = each_chunk_size;
@@ -47,6 +66,7 @@ mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size){
 
 void* mempool_alloc(mempool_t *mempool, mem_size node_data_size){
     assert(mempool);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     if (node_data_size <= 0){
         fprintf(stderr, "node data size needed to be allocated must be larger zero");
         goto err;
@@ -94,13 +114,16 @@ void* mempool_alloc(mempool_t *mempool, mem_size node_data_size){
                     }else {
                         DEBUG("allocate the entire node, total need size is %llu, free node size is %llu", total_need_size, free->node_size);
                         not_free = free;
-                        chunk->free_list = node_delete(chunk->free_list, not_free);
+                        // chunk->free_list = node_delete(chunk->free_list, not_free);
+                        node_delete(chunk->free_list, not_free);
                         not_free->is_free = 0;
                     }
-                    chunk->alloc_list = node_insert(chunk->alloc_list, not_free);
+                    // chunk->alloc_list = node_insert(chunk->alloc_list, not_free);
+                    node_insert(chunk->alloc_list, not_free);
                     chunk->alloc_chunk_size += not_free->node_size;
                     chunk->alloc_data_size += (not_free->node_size - NODE_HEADER_SIZE - NODE_TAILER_SIZE);
                     DEBUG("FIND FREE NODE");
+                    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
                     return ((void*)not_free + NODE_HEADER_SIZE);
                 }
                 free = free->next;
@@ -125,6 +148,7 @@ void* mempool_alloc(mempool_t *mempool, mem_size node_data_size){
             goto FIND_FREE_NODE;
         }
     err:
+        if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
         return NULL;
 }
 
@@ -133,17 +157,18 @@ void mempool_free(mempool_t *mempool, void *addr){
     assert(addr);
     // find chunk
     DEBUG("free addr is %llu", addr);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *curr_chunk = mempool->chunk_list;
     while (curr_chunk){
-        if (addr >= curr_chunk->start && addr < curr_chunk->start + curr_chunk->mempool_size){
+        if (addr >= curr_chunk->start && addr < curr_chunk->start + mempool->each_chunk_size ){
             break;
         }
         curr_chunk = curr_chunk->next;
     }
     // delete current node in alloc list and insert current node in free list
     node_t *curr_node = (node_t*)(addr - NODE_HEADER_SIZE);
-    curr_chunk->alloc_list = node_delete(curr_chunk->alloc_list, curr_node);
-    curr_chunk->free_list = node_insert(curr_chunk->free_list, curr_node);
+    node_delete(curr_chunk->alloc_list, curr_node);
+    node_insert(curr_chunk->free_list, curr_node);
     curr_node->is_free = 1;
 
     curr_chunk->alloc_chunk_size -= curr_node->node_size;
@@ -154,27 +179,37 @@ void mempool_free(mempool_t *mempool, void *addr){
 
 mempool_t* mempool_clear(mempool_t *mempool){
     assert(mempool);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     while (chunk){
         init_chunk(chunk, chunk->mempool_size);
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return mempool;
 }
 
 int mempool_destroy(mempool_t *mempool){
     assert(mempool);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list, *chunk_temp;
     while (chunk){
         chunk_temp = chunk;
         chunk = chunk->next;
         free(chunk_temp);
     }
+    if (mempool->need_lock) {
+        pthread_mutex_unlock(&mempool->lock);
+        pthread_mutex_destroy(&mempool->lock);
+    }
     free(mempool);
     return 0;
 }
 
 static void merge_free_node(mempool_t *mempool, chunk_t *chunk, node_t *node){
+    assert(mempool);
+    assert(chunk);
+    assert(node);
     node_t *next = node, *curr = node;
     while (next->is_free){
         curr = next;
@@ -183,12 +218,14 @@ static void merge_free_node(mempool_t *mempool, chunk_t *chunk, node_t *node){
         next = *(node_t**)((void*)next - NODE_TAILER_SIZE);
     }
     next = (node_t*) ((void*)curr + curr->node_size);
-    while ((void*)next < chunk->start + chunk->mempool_size && next->is_free){
-        chunk->free_list = node_delete(chunk->free_list, next);
+    while ((void*)next < chunk->start + mempool->each_chunk_size && next->is_free){
+        // chunk->free_list = node_delete(chunk->free_list, next);
+        node_delete(chunk->free_list, next);
         curr->node_size += next->node_size;
         next = (node_t*) ((void*)next + next->node_size);
     }
     *(node_t**)((void*)curr + curr->node_size - NODE_TAILER_SIZE) = curr;
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
 }
 
 static chunk_t* extend_chunk_list(mempool_t *mempool, mem_size chunk_size){
@@ -204,28 +241,6 @@ static chunk_t* extend_chunk_list(mempool_t *mempool, mem_size chunk_size){
     add_chunk->next = mempool->chunk_list;
     mempool->chunk_list = add_chunk;
     return add_chunk;
-}
-
-static node_t* node_delete(node_t *head, node_t *node){
-    if (node->pre == NULL){
-        head = node->next;
-        if(head)
-            head->pre = NULL;
-    }else {
-        node->pre->next = node->next;
-        if (node->next)
-            node->next->pre = node->pre;
-    }
-    return head;
-}
-
-static node_t* node_insert(node_t *head, node_t *node){
-    node->pre = NULL;
-    node->next = head;
-    if (head)
-        head->pre = node;
-    head = node;
-    return head;
 }
 
 static void init_chunk(void *chunk_head, mem_size chunk_size){
@@ -247,40 +262,47 @@ mem_size get_total_mempool_size(mempool_t *mempool){
 
 mem_size get_used_alloc_chunk_size(mempool_t *mempool){
     assert(mempool);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     mem_size alloc_chunk_size = 0;
     while (chunk){
         alloc_chunk_size += chunk->alloc_chunk_size;
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return alloc_chunk_size;
 }
 
 mem_size get_used_alloc_data_size(mempool_t *mempool){
     assert(mempool);
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     mem_size alloc_data_size = 0;
     while (chunk){
         alloc_data_size += chunk->alloc_data_size;
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return alloc_data_size;
 }
 
 mem_size get_chunk_count(mempool_t *mempool){
     assert(mempool);
     mem_size count = 0;
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     while (chunk){
         count++;
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return count;
 }
 
 mem_size get_alloc_node_count(mempool_t *mempool){
     assert(mempool);
     mem_size count = 0;
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     node_t *node;
     while (chunk){
@@ -291,12 +313,14 @@ mem_size get_alloc_node_count(mempool_t *mempool){
         }
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return count;
 }
 
 mem_size get_free_node_count(mempool_t *mempool){
     assert(mempool);
     mem_size count = 0;
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     node_t *node;
     while (chunk){
@@ -307,6 +331,7 @@ mem_size get_free_node_count(mempool_t *mempool){
         }
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
     return count;
 }
 
@@ -315,6 +340,7 @@ void print_mempool(mempool_t *mempool){
     printf("total mempool size:%llu, chunk count:%llu, alloc node count:%llu, free node count:%llu\n", get_total_mempool_size(mempool), get_chunk_count(mempool), get_alloc_node_count(mempool), get_free_node_count(mempool));
     printf("the total node size allocated is %llu\n", get_used_alloc_chunk_size(mempool));
     printf("the total data size allocated is %llu\n", get_used_alloc_data_size(mempool));
+    if (mempool->need_lock) pthread_mutex_lock(&mempool->lock);
     chunk_t *chunk = mempool->chunk_list;
     while (chunk){
         node_t *alloc_node, *free_node;
@@ -332,4 +358,5 @@ void print_mempool(mempool_t *mempool){
         printf("chunk id:%d, alloc node count:%llu, free node count:%llu\n", chunk->id, alloc_count, free_count);
         chunk = chunk->next;
     }
+    if (mempool->need_lock) pthread_mutex_unlock(&mempool->lock);
 }

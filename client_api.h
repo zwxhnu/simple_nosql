@@ -20,7 +20,7 @@ reply_t map_put(int sockfd, item_t *key, item_t *value){
     mempool_free(mp, out);
 
     reply_t in;
-    n = read(sockfd, &in, sizeof(reply_t));
+    while((n = read(sockfd, &in, sizeof(reply_t))) > 0) break;
     return in;
 }
 
@@ -41,10 +41,9 @@ reply_t map_get(int sockfd,  item_t *key, item_t **value){
 
     reply_t in;
     n = read(sockfd, &in, sizeof(reply_t));
-    if (in.errno == MAP_OK){
+    if (in.err_no == MAP_OK){
         DEBUG("map get, key len is %llu, value len is %llu", in.key_len, in.value_len);
         (*value)->len = in.value_len;
-        // (*value)->data = malloc(in.value_len);
         (*value)->data = mempool_alloc(mp, in.value_len);
         memset((*value)->data, 0, in.value_len);
         n = read(sockfd, (*value)->data, in.value_len);
@@ -68,8 +67,8 @@ int map_remove(int sockfd, item_t *key){
     mempool_free(mp, out);
 
     reply_t in;
-    n = read(sockfd, &in, sizeof(reply_t));
-    return in.errno;
+    while ((n = read(sockfd, &in, sizeof(reply_t))) > 0) break;
+    return in.err_no;
 }
 
 void map_free(int sockfd){
@@ -96,7 +95,7 @@ int map_size(int sockfd){
     int n = write(sockfd, &msg, sizeof(message_t));
     
     reply_t in;
-    n = read(sockfd, &in, sizeof(reply_t));
-    DEBUG("size, response errno is %s", status_name[in.errno]);
+    while ((n = read(sockfd, &in, sizeof(reply_t))) > 0) break;
+    DEBUG("size, response errno is %s", status_name[in.err_no]);
     return in.key_len;
 }

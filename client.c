@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "common.h"
 #include "client_api.h"
 #include "kv_log.h"
@@ -5,14 +6,17 @@
 
 char *ip = DEFAULT_SERVER;
 int port = DEFAULT_PORT;
+int thrds = 1;
 unsigned long max_mempool_size = MAX_MEMPOOL_SIZE;
 unsigned long each_chunk_size = EACH_CHUNK_SIZE;
-int num_data = 100;
+bool waiting_transfer_data = true;
+int num_data = 2;
 
 void usage(char *program);
 void parse_args(int argc, char *argv[]);
 int connect_setup();
-void *handle_connection(void* ptr);
+void *handle_connection(void *ptr);
+void pin_1thread_to_1core();
 void test_func1(int sockfd);
 void test_func2(int sockfd);
 
@@ -20,24 +24,53 @@ void test_func2(int sockfd);
 int main(int argc, char *argv[]){
     parse_args(argc, argv);
     INFO("each chunk size=%lu, max mempool size=%lu, number of put data=%d", each_chunk_size, max_mempool_size, num_data);
-    int sockfd = connect_setup();
-    mp = mempool_init(each_chunk_size, max_mempool_size);
-    handle_connection((void*)&sockfd);
+    pthread_t serv_thread[MAX_THREADS];
+    uint8_t need_lock = thrds > 1 ? 1 : 0;
+    mp = mempool_init(each_chunk_size, max_mempool_size, need_lock);
+    for (int i = 0; i < thrds; ++i){
+        int *socket_fd = mempool_alloc(mp, sizeof(int));
+        if((*socket_fd = connect_setup(port)) < 0){
+            perror("connect failed");
+            exit(EXIT_FAILURE);
+        } else if (pthread_create(&serv_thread[i], NULL, handle_connection, socket_fd) < 0){
+            perror("Error: create pthread");
+        }
+    }
+    int second = 2;
+    INFO("going to sleep %ds", second);
+    sleep(second);
+    waiting_transfer_data = false;
+    
+    for(int i=0; i < thrds; ++i) {
+        pthread_join(serv_thread[i], NULL);
+    }
+
+    printf("client done!\n");
     mempool_clear(mp);
+    getchar();
     mempool_destroy(mp);
     return 0;
 }
 
 void *handle_connection(void *ptr){
-    int sockfd = *(int*)ptr;
     // INFO("--------------------------test_func1--------------------------");
     // test_func1(sockfd);
+    int sockfd = *(int*)ptr;
+    mempool_free(mp, ptr);
+    pin_1thread_to_1core();
+    if (thrds > 1) {
+        while (waiting_transfer_data) sched_yield();
+        int start = 1;
+        write(sockfd, &start, sizeof(int));
+    }
+    INFO("sockfd:%d start handle command", sockfd);
     INFO("--------------------------test_func2--------------------------");
     test_func2(sockfd);
     map_free(sockfd);
     INFO("map_free");
     map_destroy(sockfd);
     INFO("map_destroy");
+    close(sockfd);
 }
 
 void test_func2(int sockfd){
@@ -50,13 +83,12 @@ void test_func2(int sockfd){
     item_t *v = (item_t*)mempool_alloc(mp, sizeof(item_t));
     memset(v, 0, sizeof(item_t));
     reply_t reply = map_get(sockfd, key, (item_t**)&v);
-    if (reply.errno == MAP_OK){
-        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.errno], key->data, v->data);
+    if (reply.err_no == MAP_OK){
+        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.err_no], key->data, v->data);
         mempool_free(mp, v->data);
     }else{
-        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.errno], key->data);
+        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.err_no], key->data);
     }
-    mempool_free(mp, v);
     mempool_free(mp, key);
 
     int i;
@@ -69,18 +101,16 @@ void test_func2(int sockfd){
         snprintf(data1, 1024, "%s-%d", key_prefix, i);
         key->len = strlen(data1) + 1;
         key->data = data1;
-        // printf("key_len=%d, key_data=%s\n", key->len, key->data);
         snprintf(data2, 1024, "%s-%d", value_prefix, i);
         value->len = strlen(data2) + 1;
         value->data = data2;
-        // printf("value_len=%d, value_data=%s\n", value->len, value->data);
 
         reply = map_put(sockfd, key, value);
-        INFO("map_put[%d], reply.errno=%s, key=%s, value=%s", i, status_name[reply.errno], key->data, value->data);
+        INFO("map_put[%d], reply.errno=%s, key=%s, value=%s", i, status_name[reply.err_no], key->data, value->data);
         mempool_free(mp, key);
         mempool_free(mp, value);
     }
-    // print_mempool(mp);
+
     for (i = 0; i < num_data; ++i){
         key = (item_t*)mempool_alloc(mp, sizeof(item_t));
         value = (item_t*)mempool_alloc(mp, sizeof(item_t));
@@ -94,24 +124,24 @@ void test_func2(int sockfd){
         value->data = data2;
 
         reply = map_get(sockfd, key, (item_t**)&v);
-        if (reply.errno == MAP_OK){
-            INFO("map_get[%d], reply.errno=%s, key=%s, reple.value=%s", i, status_name[reply.errno], key->data, v->data);
+        if (reply.err_no == MAP_OK){
+            INFO("map_get[%d], reply.errno=%s, key=%s, reply.value=%s", i, status_name[reply.err_no], key->data, v->data);
             mempool_free(mp, v->data);
         }else{
-            INFO("map_get[%d], reply.errno=%s, key=%s", i, status_name[reply.errno], key->data);
+            INFO("map_get[%d], reply.errno=%s, key=%s", i, status_name[reply.err_no], key->data);
         }
         mempool_free(mp, key);
         mempool_free(mp, value);
     }
-    // print_mempool(mp);
+    mempool_free(mp, v);
 }
 
 void test_func1(int sockfd){
     item_t *key, *value;
-    // key = (item_t*)malloc(sizeof(item_t));
+
     key = (item_t*)mempool_alloc(mp, sizeof(item_t));
     memset(key, 0, sizeof(item_t));
-    // value = (item_t*)malloc(sizeof(item_t));
+
     value = (item_t*)mempool_alloc(mp, sizeof(item_t));
     memset(value, 0, sizeof(item_t));
     key->data = "mykey111";
@@ -120,17 +150,17 @@ void test_func1(int sockfd){
     value->len = strlen(value->data) + 1;
     
     reply_t reply = map_put(sockfd, key, value);
-    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.errno], key->data, value->data);
-    // item_t *v = (item_t*)malloc(sizeof(item_t));
+    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.err_no], key->data, value->data);
+
     item_t *v = (item_t*)mempool_alloc(mp, sizeof(item_t));
     memset(v, 0, sizeof(item_t));
     reply = map_get(sockfd, key, (item_t**)&v);
-    if (reply.errno == MAP_OK){
-        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.errno], key->data, v->data);
+    if (reply.err_no == MAP_OK){
+        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.err_no], key->data, v->data);
         // free(v->data);
         mempool_free(mp, v->data);
     }else{
-        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.errno], key->data);
+        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.err_no], key->data);
     }
     key->data = "mykey222";
     key->len = strlen(key->data) + 1;
@@ -138,34 +168,34 @@ void test_func1(int sockfd){
     value->len = strlen(value->data) + 1;
 
     reply = map_put(sockfd, key, value);
-    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.errno], key->data, value->data);
+    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.err_no], key->data, value->data);
     reply = map_get(sockfd, key, (item_t**)&v);
-    if (reply.errno == MAP_OK){
-        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.errno], key->data, v->data);
+    if (reply.err_no == MAP_OK){
+        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.err_no], key->data, v->data);
         // free(v->data);
         mempool_free(mp, v->data);
     }else{
-        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.errno], key->data);
+        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.err_no], key->data);
     }
     value->data = "mydata333";
     reply = map_put(sockfd, key, value);
-    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.errno], key->data, value->data);
+    INFO("map_put, reply.errno=%s, key=%s, value=%s", status_name[reply.err_no], key->data, value->data);
 
     INFO("map size, reply.len=%lu", map_size(sockfd));
-    int errno = map_remove(sockfd, key);
-    INFO("map remove, reply.errno=%s, key=%s", status_name[errno], key->data);
+    int err_no = map_remove(sockfd, key);
+    INFO("map remove, reply.errno=%s, key=%s", status_name[err_no], key->data);
     
     INFO("map size, reply.len=%lu", map_size(sockfd));
     reply = map_get(sockfd, key, (item_t**)&v);
-    if (reply.errno == MAP_OK){
-        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.errno], key->data, v->data);
+    if (reply.err_no == MAP_OK){
+        INFO("map_get, reply.errno=%s, key=%s, reple.value=%s", status_name[reply.err_no], key->data, v->data);
         // free(v->data);
         mempool_free(mp, v->data);
     }else {
-        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.errno], key->data);
+        INFO("map_get, reply.errno=%s, key=%s", status_name[reply.err_no], key->data);
     }
-    errno = map_remove(sockfd, key);
-    INFO("map remove, reply.errno=%s, key=%s", status_name[errno], key->data);
+    err_no = map_remove(sockfd, key);
+    INFO("map remove, reply.errno=%s, key=%s", status_name[err_no], key->data);
 
     // free(v);
     mempool_free(mp, v);
@@ -173,6 +203,27 @@ void test_func1(int sockfd){
     mempool_free(mp, key);
     // free(value);
     mempool_free(mp, value);
+}
+
+// each thread pins to one core
+void pin_1thread_to_1core(){
+    cpu_set_t cpuset;
+    pthread_t thread;
+    thread = pthread_self();
+    CPU_ZERO(&cpuset);
+    int j,s;
+    for (j = 0; j < thrds; j++)
+        CPU_SET(j, &cpuset);
+    s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+        DEBUG("pthread_setaffinity_np:%d", s);
+    s = pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+        DEBUG("pthread_getaffinity_np:%d",s);
+    DEBUG("Set returned by pthread_getaffinity_np() contained:");
+    for (j = 0; j < __CPU_SETSIZE; j++)
+        if (CPU_ISSET(j, &cpuset))
+            DEBUG("    CPU %d", j);
 }
 
 int connect_setup(){
@@ -205,6 +256,7 @@ void usage(char *program){
     printf("Options:\n");
     printf(" -s <server>                        connect to server address(default %s)\n", DEFAULT_SERVER);
     printf(" -p <port>                          connect to server port(default %d)\n", DEFAULT_PORT);
+    printf(" -t <threads>                       handle connection with multi-threads(default 1, max %d)\n", MAX_THREADS);
     printf(" -m <max-mempool-size(GB/MB/KB)>    maximum memory pool size(default %d)\n", MAX_MEMPOOL_SIZE);
     printf(" -e <each-chunk-size(GB/MB/KB)>     each chunk size(default %d)\n", EACH_CHUNK_SIZE);
     printf(" -n <num-data>                      the number of put data\n");
@@ -233,6 +285,19 @@ void parse_args(int argc, char *argv[]){
                 i++;
             }else {
                 printf("cannot read ip address\n");
+                usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+        }else if (strlen(argv[i]) == 2 && strcmp(argv[i], "-t") == 0){
+            if(i+1 < argc){
+                thrds = atoi(argv[i+1]);
+                if(thrds <= 0 || thrds > MAX_THREADS){
+                    fprintf(stdout, "invalid numbers of thread\n");
+                    exit(EXIT_FAILURE);
+                }
+                i++;
+            }else {
+                fprintf(stdout, "cannot read numbers of thread\n");
                 usage(argv[0]);
                 exit(EXIT_FAILURE);
             }

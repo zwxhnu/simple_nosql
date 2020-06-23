@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include "server_api.h"
@@ -7,45 +8,69 @@
 
 char *ip = DEFAULT_SERVER;
 int port = DEFAULT_PORT;
+int thrds = 1;
 unsigned long max_mempool_size = MAX_MEMPOOL_SIZE;
 unsigned long each_chunk_size = EACH_CHUNK_SIZE;
 
 void usage(char *program);
 void parse_args(int argc, char *argv[]);
 int connect_setup();
-void *handle_connection(void* ptr);
+void *handle_connection(void *ptr);
+void pin_1thread_to_1core();
 
 int main(int argc, char *argv[]){
     parse_args(argc, argv);
     INFO("each chunk size=%lu, max mempool size=%lu", each_chunk_size, max_mempool_size);
-    int listen_fd = connect_setup(), sockfd;
+    int listen_fd = connect_setup();
+    pthread_t serv_thread[MAX_THREADS];
 
+    uint8_t need_lock = thrds > 1 ? 1 : 0;
+    mp = mempool_init(each_chunk_size, max_mempool_size, need_lock);
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
-    if((sockfd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len)) < 0){
-        perror("accept failed");
-        close(listen_fd);
-        exit(EXIT_FAILURE);
+    for (int i = 0; i < thrds; ++i){
+        INFO("thread:%d, waiting for accept", i);
+        int *sockfd = mempool_alloc(mp, sizeof(int));
+        if((*sockfd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len)) < 0){
+            perror("accept failed");
+            close(listen_fd);
+            exit(EXIT_FAILURE);
+        } else if (pthread_create(&serv_thread[i], NULL, handle_connection, sockfd) < 0){
+            close(listen_fd);
+            perror("create pthread failed");
+        }
     }
-    mp = mempool_init(each_chunk_size, max_mempool_size);
-    handle_connection((void*)&sockfd);
-    mempool_clear(mp);
-    mempool_destroy(mp);
+    for (int i=0; i < thrds; ++i){
+        pthread_join(serv_thread[i], NULL);
+    }
+    INFO("server done!");
     close(listen_fd);
+    mempool_clear(mp);
+    getchar();
+    mempool_destroy(mp);
     return 0;
 }
 
-void *handle_connection(void* ptr){
+void *handle_connection(void *ptr){
     int sockfd = *(int*)ptr;
+    mempool_free(mp, ptr);
+    pin_1thread_to_1core();
+    INFO("sockfd:%d wait handle command", sockfd);
+    if (thrds > 1){
+        int start = 0, n = 0;
+        while (n = read(sockfd, &start, sizeof(int)) > 0) break;
+        if (n != sizeof(int) && start != 1){
+            printf("start read %d bytes, start=%d\n", n, start);
+            exit(EXIT_FAILURE);
+        }
+    }
+    INFO("sockfd:%d start handle command", sockfd);
     map_t map = new_hashmap(0, NULL);
     while (1){
         message_t in;
-        int n = read(sockfd, &in, sizeof(message_t));
-        if (n <= 0)
-            continue;
-        // INFO("read %d bytes", n);
-        switch (in.cmd)
-        {
+        int n;
+        while((n = read(sockfd, &in, sizeof(message_t))) > 0) break;
+        switch (in.cmd){
         case CMD_PUT:
             INFO("receive `PUT` command");
             cmd_put(sockfd, map, &in);
@@ -69,12 +94,14 @@ void *handle_connection(void* ptr){
         case CMD_DESTROY:
             INFO("receive `DESTROY` command");
             cmd_destroy(map);
-            return (void*)0;
+            goto ret;
         default:
             break;
         }
     }
-    
+    ret:
+        close(sockfd);
+        return (void*)0;
 }
 
 int connect_setup(){
@@ -101,12 +128,34 @@ int connect_setup(){
     return listen_fd;
 }
 
+// each thread pins to one core
+void pin_1thread_to_1core(){
+    cpu_set_t cpuset;
+    pthread_t thread;
+    thread = pthread_self();
+    CPU_ZERO(&cpuset);
+    int j,s;
+    for (j = 0; j < thrds; j++)
+        CPU_SET(j, &cpuset);
+    s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+        DEBUG("pthread_setaffinity_np:%d", s);
+    s = pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+        DEBUG("pthread_getaffinity_np:%d",s);
+    DEBUG("Set returned by pthread_getaffinity_np() contained:");
+    for (j = 0; j < __CPU_SETSIZE; j++)
+        if (CPU_ISSET(j, &cpuset))
+            DEBUG("    CPU %d", j);
+}
+
 void usage(char *program){
     printf("Usage: \n");
     printf("%s\tstart server 0.0.0.0:%d\n", program, port);
     printf("Options:\n");
     printf(" -s <server>                        bind to server address(default %s)\n", DEFAULT_SERVER);
     printf(" -p <port>                          bind to server port(default %d)\n", DEFAULT_PORT);
+    printf(" -t <threads>                       handle connection with multi-threads(default 1, max %d)\n", MAX_THREADS);
     printf(" -m <max-mempool-size(GB/MB/KB)>    maximum memory pool size(default %d)\n", MAX_MEMPOOL_SIZE);
     printf(" -e <each-chunk-size(GB/MB/KB)>     each chunk size(default %d)\n", EACH_CHUNK_SIZE);
     printf(" -h                                 display the help information\n");
@@ -134,6 +183,19 @@ void parse_args(int argc, char *argv[]){
                 i++;
             }else {
                 printf("cannot read ip address\n");
+                usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+        }else if (strlen(argv[i]) == 2 && strcmp(argv[i], "-t") == 0){
+            if(i+1 < argc){
+                thrds = atoi(argv[i+1]);
+                if(thrds <= 0 || thrds > MAX_THREADS){
+                    fprintf(stdout, "invalid numbers of thread\n");
+                    exit(EXIT_FAILURE);
+                }
+                i++;
+            }else {
+                fprintf(stdout, "cannot read numbers of thread\n");
                 usage(argv[0]);
                 exit(EXIT_FAILURE);
             }

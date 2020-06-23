@@ -7,13 +7,13 @@ void cmd_put(int sockfd, map_t map, message_t *in){
     // DEBUG("[malloc] in data addr is %llu", data);
     int n = read(sockfd, data, in->key_len + in->value_len);
 
-    int errno = PUT(map, data, data + in->key_len);
-    INFO("PUT, errno=%s, key=%s, value=%s, addr=%llu", status_name[errno], data, data + in->key_len, data);
+    int err_no = PUT(map, data, data + in->key_len);
+    INFO("PUT, errno=%s, key=%s, value=%s, addr=%llu", status_name[err_no], data, data + in->key_len, data);
 
     reply_t out;
     out.key_len = 0;
     out.value_len = 0;
-    out.errno = errno;
+    out.err_no = err_no;
     n = write(sockfd, (void*)&out, sizeof(reply_t));
 }
 
@@ -25,15 +25,15 @@ void cmd_get(int sockfd, map_t map, message_t *in){
     int n = read(sockfd, data, in->key_len);
 
     void *value = NULL;
-    int errno = GET(map, data, (void**)&value);
-    INFO("GET, err_name=%s, key=%s, value=%s, addr=%llu", status_name[errno], data, value, value - in->key_len);
+    int err_no = GET(map, data, (void**)&value);
+    INFO("GET, err_name=%s, key=%s, value=%s, addr=%llu", status_name[err_no], data, value, value - in->key_len);
     mempool_free(mp, data);
 
     reply_t resp;
-    resp.errno = errno;
+    resp.err_no = err_no;
     resp.key_len = 0;
     resp.value_len = 0;
-    if (errno == MAP_OK){
+    if (err_no == MAP_OK){
         resp.value_len = strlen((char*)value) + 1;
     }
     
@@ -42,7 +42,7 @@ void cmd_get(int sockfd, map_t map, message_t *in){
     memset(out, 0, sizeof(reply_t) + resp.value_len);
     // DEBUG("[malloc] out data addr is %llu", out);
     memcpy(out, &resp, sizeof(reply_t));
-    if (errno == MAP_OK)
+    if (err_no == MAP_OK)
         memcpy(out + sizeof(reply_t), value, resp.value_len);
     n = write(sockfd, out, sizeof(reply_t) + resp.value_len);
     // DEBUG("[free] out data addr is %llu", out);
@@ -59,21 +59,21 @@ void cmd_remove(int sockfd, map_t map, message_t *in){
 
     // free(ptr);
     void *key_addr;
-    int errno = REMOVE(map, data, (void**)&key_addr, NULL);
-    if (errno == MAP_OK)
-        INFO("REMOVE, errno=%s, key=%s, key addr=%llu", status_name[errno], key_addr, key_addr);
+    int err_no = REMOVE(map, data, (void**)&key_addr, NULL);
+    if (err_no == MAP_OK)
+        INFO("REMOVE, errno=%s, key=%s, key addr=%llu", status_name[err_no], key_addr, key_addr);
     else
-        INFO("REMOVE, errno=%s, key=%s", status_name[errno], data);
+        INFO("REMOVE, errno=%s, key=%s", status_name[err_no], data);
     // DEBUG("[free] in data addr is %llu", data);
     mempool_free(mp, data);
-    if (errno == MAP_OK)
+    if (err_no == MAP_OK)
         mempool_free(mp, key_addr);
     // print_hashmap(map);
 
     reply_t out;
     out.key_len = 0;
     out.value_len = 0;
-    out.errno = errno;
+    out.err_no = err_no;
     n = write(sockfd, (void*)&out, sizeof(reply_t));
 }
 
@@ -105,7 +105,7 @@ void cmd_len(int sockfd, map_t map){
     INFO("LEN, len=%d", len);
 
     reply_t out;
-    out.errno = MAP_OK;
+    out.err_no = MAP_OK;
     out.key_len = len;
     out.value_len = 0;
     write(sockfd, (void*)&out, sizeof(reply_t));

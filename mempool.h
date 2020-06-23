@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include <pthread.h>
 #include "kv_log.h"
 
 #define mem_size unsigned long long
@@ -39,13 +40,14 @@ typedef struct chunk chunk_t;
 
 struct mempool{
     unsigned int last_id;
-    uint8_t auto_extend;
+    uint8_t auto_extend, need_lock;
     mem_size each_chunk_size, total_chunk_size, max_mempool_size;
+    pthread_mutex_t lock;
     chunk_t *chunk_list;
 }mempool;
 typedef struct mempool mempool_t;
 
-mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size);
+mempool_t* mempool_init(mem_size each_chunk_size, mem_size max_pool_size, uint8_t need_lock);
 void* mempool_alloc(mempool_t *mempool, mem_size node_data_size);
 void mempool_free(mempool_t *mempool, void *addr);
 mempool_t* mempool_clear(mempool_t *mempool);
