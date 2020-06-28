@@ -2,6 +2,7 @@
 #include "common.h"
 #include "client_api.h"
 #include "kv_log.h"
+#include "measure.h"
 // DEBUG_SET_LEVEL(DEBUG_LEVEL_DEBUG);
 
 char *ip = DEFAULT_SERVER;
@@ -19,6 +20,7 @@ void *handle_connection(void *ptr);
 void pin_1thread_to_1core();
 void test_func1(int sockfd);
 void test_func2(int sockfd);
+void report_perf(char *cmd, size_t duration, int sockfd);
 
 
 int main(int argc, char *argv[]){
@@ -91,37 +93,39 @@ void test_func2(int sockfd){
     }
     mempool_free(mp, key);
 
-    int i;
+    int i = 0;
     char *key_prefix = "my-key", *value_prefix = "my-value", data1[1024], data2[1024];
+    key = (item_t*)mempool_alloc(mp, sizeof(item_t));
+    value = (item_t*)mempool_alloc(mp, sizeof(item_t));
+    memset(key, 0, sizeof(item_t));
+    memset(value, 0, sizeof(item_t));
+    snprintf(data1, 1024, "%s-%d", key_prefix, i);
+    key->len = strlen(data1) + 1;
+    key->data = data1;
+    snprintf(data2, 1024, "%s-%d", value_prefix, i);
+    value->len = strlen(data2) + 1;
+    value->data = data2;
+    size_t start = get_cycles(), end;
     for (i = 0; i < num_data; ++i){
-        key = (item_t*)mempool_alloc(mp, sizeof(item_t));
-        value = (item_t*)mempool_alloc(mp, sizeof(item_t));
-        memset(key, 0, sizeof(item_t));
-        memset(value, 0, sizeof(item_t));
-        snprintf(data1, 1024, "%s-%d", key_prefix, i);
-        key->len = strlen(data1) + 1;
-        key->data = data1;
-        snprintf(data2, 1024, "%s-%d", value_prefix, i);
-        value->len = strlen(data2) + 1;
-        value->data = data2;
-
         reply = map_put(sockfd, key, value);
         INFO("map_put[%d], reply.errno=%s, key=%s, value=%s", i, status_name[reply.err_no], key->data, value->data);
-        mempool_free(mp, key);
-        mempool_free(mp, value);
     }
+    end = get_cycles();
+    printf("report perf(requests = %d, sockfd = %d):\n", num_data, sockfd);
+    report_perf("SET", end - start, sockfd);
 
+    start = get_cycles();
     for (i = 0; i < num_data; ++i){
-        key = (item_t*)mempool_alloc(mp, sizeof(item_t));
-        value = (item_t*)mempool_alloc(mp, sizeof(item_t));
-        memset(key, 0, sizeof(item_t));
-        memset(value, 0, sizeof(item_t));
-        snprintf(data1, 1024, "%s-%d", key_prefix, i);
-        key->len = strlen(data1) + 1;
-        key->data = data1;
-        snprintf(data2, 1024, "%s-%d", value_prefix, i);
-        value->len = strlen(data2) + 1;
-        value->data = data2;
+        // key = (item_t*)mempool_alloc(mp, sizeof(item_t));
+        // value = (item_t*)mempool_alloc(mp, sizeof(item_t));
+        // memset(key, 0, sizeof(item_t));
+        // memset(value, 0, sizeof(item_t));
+        // snprintf(data1, 1024, "%s-%d", key_prefix, i);
+        // key->len = strlen(data1) + 1;
+        // key->data = data1;
+        // snprintf(data2, 1024, "%s-%d", value_prefix, i);
+        // value->len = strlen(data2) + 1;
+        // value->data = data2;
 
         reply = map_get(sockfd, key, (item_t**)&v);
         if (reply.err_no == MAP_OK){
@@ -130,10 +134,14 @@ void test_func2(int sockfd){
         }else{
             INFO("map_get[%d], reply.errno=%s, key=%s", i, status_name[reply.err_no], key->data);
         }
-        mempool_free(mp, key);
-        mempool_free(mp, value);
+        // mempool_free(mp, key);
+        // mempool_free(mp, value);
     }
+    end = get_cycles();
+    report_perf("GET", end - start, sockfd);
     mempool_free(mp, v);
+    mempool_free(mp, key);
+    mempool_free(mp, value);
 }
 
 void test_func1(int sockfd){
@@ -203,6 +211,13 @@ void test_func1(int sockfd){
     mempool_free(mp, key);
     // free(value);
     mempool_free(mp, value);
+}
+
+void report_perf(char *cmd, size_t duration, int sockfd){
+    double cpu_mhz = get_cpu_mhz();
+    double total_time = (double)duration / cpu_mhz;
+    double tput = (double)num_data / total_time * 1000000;
+    printf("%s: %.2f requests per second, total time:%.2f us\n", cmd, tput, total_time);
 }
 
 // each thread pins to one core

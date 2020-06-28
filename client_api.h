@@ -42,10 +42,10 @@ reply_t map_get(int sockfd,  item_t *key, item_t **value){
     reply_t in;
     n = read(sockfd, &in, sizeof(reply_t));
     if (in.err_no == MAP_OK){
-        DEBUG("map get, key len is %llu, value len is %llu", in.key_len, in.value_len);
+        // DEBUG("map get, key len is %llu, value len is %llu", in.key_len, in.value_len);
         (*value)->len = in.value_len;
         (*value)->data = mempool_alloc(mp, in.value_len);
-        memset((*value)->data, 0, in.value_len);
+        // memset((*value)->data, 0, in.value_len);
         n = read(sockfd, (*value)->data, in.value_len);
     }
     return in;
